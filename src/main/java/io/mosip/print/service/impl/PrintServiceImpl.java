@@ -31,7 +31,9 @@ import com.fasterxml.jackson.databind.JsonMappingException;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import io.mosip.print.dto.*;
 import io.mosip.print.exception.*;
+import io.mosip.print.util.*;
 import io.mosip.vercred.CredentialsVerifier;
 import io.mosip.vercred.exception.ProofDocumentNotFoundException;
 import io.mosip.vercred.exception.ProofTypeNotFoundException;
@@ -58,10 +60,6 @@ import io.mosip.print.constant.PDFGeneratorExceptionCodeConstant;
 import io.mosip.print.constant.PlatformSuccessMessages;
 import io.mosip.print.constant.QrVersion;
 import io.mosip.print.constant.UinCardType;
-import io.mosip.print.dto.CryptoWithPinRequestDto;
-import io.mosip.print.dto.CryptoWithPinResponseDto;
-import io.mosip.print.dto.DataShare;
-import io.mosip.print.dto.JsonValue;
 import io.mosip.print.logger.LogDescription;
 import io.mosip.print.logger.PrintLogger;
 import io.mosip.print.model.CredentialStatusEvent;
@@ -71,17 +69,6 @@ import io.mosip.print.service.PrintService;
 import io.mosip.print.service.UinCardGenerator;
 import io.mosip.print.spi.CbeffUtil;
 import io.mosip.print.spi.QrCodeGenerator;
-import io.mosip.print.util.AuditLogRequestBuilder;
-import io.mosip.print.util.CbeffToBiometricUtil;
-import io.mosip.print.util.CryptoCoreUtil;
-import io.mosip.print.util.CryptoUtil;
-import io.mosip.print.util.DataShareUtil;
-import io.mosip.print.util.DateUtils;
-import io.mosip.print.util.JsonUtil;
-import io.mosip.print.util.RestApiClient;
-import io.mosip.print.util.TemplateGenerator;
-import io.mosip.print.util.Utilities;
-import io.mosip.print.util.WebSubSubscriptionHelper;
 
 @Service
 public class PrintServiceImpl implements PrintService{
@@ -188,6 +175,16 @@ public class PrintServiceImpl implements PrintService{
 	@Value("${mosip.print.verify.credentials.flag:true}")
 	private boolean verifyCredentialsFlag;
 
+	@Autowired
+	private NotificationUtil notificationUtil;
+
+	@Value("${mosip.send.uin.default-emailIds}")
+	private String defaultEmailIds;
+
+	@Value("${mosip.send.uin.email.attachment.enabled:false}")
+	private Boolean emailUINEnabled;
+	private static final String UIN_CARD_EMAIL_SUB = "RPR_UIN_CARD_EMAIL_SUB";
+	private static final String UIN_CARD_EMAIL = "RPR_UIN_CARD_EMAIL";
 
 	public boolean generateCard(EventModel eventModel) {
 		String credential = null;
@@ -226,8 +223,8 @@ public class PrintServiceImpl implements PrintService{
 			proofMap = (Map) eventModel.getEvent().getData().get("proof");
 			byte[] pdfbytes = getDocuments(decodedCredential,
 					eventModel.getEvent().getData().get("credentialType").toString(), ecryptionPin,
-					eventModel.getEvent().getTransactionId(), "UIN", false).get("uinPdf");
-			isPrinted = true; 
+					eventModel.getEvent().getTransactionId(), "UIN", false, (eventModel.getEvent().getData().get("registrationId") == null ? null : eventModel.getEvent().getData().get("registrationId").toString())).get("uinPdf");
+			isPrinted = true;
 		}catch (Exception e){
 			printLogger.error(e.getMessage() , e);
 			isPrinted = false;
@@ -245,7 +242,7 @@ public class PrintServiceImpl implements PrintService{
 	private Map<String, byte[]> getDocuments(String credential, String credentialType, String encryptionPin,
 			String requestId,
 			String cardType,
-			boolean isPasswordProtected) {
+			boolean isPasswordProtected, String registrationId) {
 		printLogger.debug("PrintServiceImpl::getDocuments()::entry");
 		String credentialSubject;
 		Map<String, byte[]> byteMap = new HashMap<>();
@@ -257,12 +254,14 @@ public class PrintServiceImpl implements PrintService{
 		boolean isTransactionSuccessful = false;
 		String template = UIN_CARD_TEMPLATE;
 		byte[] pdfbytes = null;
+		String residentEmailId = null;
 		try {
 
 			credentialSubject = getCrdentialSubject(credential);
 			org.json.JSONObject credentialSubjectJson = new org.json.JSONObject(credentialSubject);
 			org.json.JSONObject decryptedJson = decryptAttribute(credentialSubjectJson, encryptionPin, credential);
 			individualBio = decryptedJson.getString("biometrics");
+			residentEmailId = decryptedJson.getString("email");
 			String individualBiometric = new String(individualBio);
 			uin = decryptedJson.getString("UIN");
 			if (isPasswordProtected) {
@@ -298,7 +297,8 @@ public class PrintServiceImpl implements PrintService{
 						PlatformErrorMessages.PRT_TEM_PROCESSING_FAILURE.getCode());
 			}
 			pdfbytes = uinCardGenerator.generateUinCard(uinArtifact, UinCardType.PDF, password);
-
+				// Send UIN Card Pdf to Email
+				sendUINInEmail(residentEmailId, registrationId, attributes, pdfbytes);
 		}
 			printStatusUpdate(requestId, pdfbytes, credentialType);
 			isTransactionSuccessful = true;
@@ -725,6 +725,20 @@ public class PrintServiceImpl implements PrintService{
 			}
 
 		return data;
+	}
+	private void sendUINInEmail(String residentEmailId, String fileName, Map<String, Object> attributes, byte[] pdfbytes) {
+		if (pdfbytes != null) {
+			try {
+				List<String> emailIds = Arrays.asList(residentEmailId, defaultEmailIds);
+				List<NotificationResponseDTO> responseDTOs = notificationUtil.emailNotification(emailIds, fileName,
+						UIN_CARD_EMAIL, UIN_CARD_EMAIL_SUB, attributes, pdfbytes);
+				responseDTOs.forEach(responseDTO ->
+						printLogger.info("UIN sent successfully via Email, server response..{}", responseDTO)
+				);
+			} catch (Exception e) {
+				printLogger.error("Failed to send pdf UIN via email.{}", residentEmailId, e);
+			}
+		}
 	}
 }
 	
