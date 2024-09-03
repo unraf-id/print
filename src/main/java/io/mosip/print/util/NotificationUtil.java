@@ -51,14 +51,15 @@ public class NotificationUtil {
 
     @Value("${mosip.default.user-preferred-language-attribute:#{null}}")
     private String userPreferredLanguageAttribute;
-
+    private String defaultLang = "English";
+    
     private static final Map languageCodes = Map.of("English","eng","français","fra","Española","spa");
     private static final String EMAIL_SUB_DEFAULT = "UIN Card Attached!";
     private static final String EMAIL_DEFAULT = "Your UIN Card is attached.";
 
     public List<NotificationResponseDTO> emailNotification(List<String> emailIds, String fileName, String emailContentTpl, String emailSubTpl, Map<String, Object> attributes,
                                                            byte[] attachmentFile) throws Exception {
-        log.info("sessionId", "idType", "id", "In emailNotification method of NotificationUtil service");
+        log.info("In emailNotification method of NotificationUtil service");
         HttpEntity<byte[]> doc = null;
         String fileText = null;
         MultiValueMap<Object, Object> emailMap = new LinkedMultiValueMap<>();
@@ -75,12 +76,14 @@ public class NotificationUtil {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         String preferredLang = (String) attributes.get(userPreferredLanguageAttribute);
+        if (!org.springframework.util.StringUtils.hasText(preferredLang)) {
+            preferredLang = defaultLang;
+        }
         String langCode = (String) languageCodes.get(preferredLang);
         emailMap.add("mailContent", getEmailContent(emailContentTpl, attributes, langCode));
         emailMap.add("mailSubject", getEmailSubject(emailSubTpl, attributes, langCode));
 
-        log.info("sessionId", "idType", "id",
-                "In emailNotification method of NotificationUtil service emailResourceUrl: " + emailResourceUrl);
+        log.info("In emailNotification method of NotificationUtil service emailResourceUrl: " + emailResourceUrl);
         emailIds.forEach(emailId -> {
             try {
                 notifierResponseList.add(sendEmail(emailId, headers, emailMap));
